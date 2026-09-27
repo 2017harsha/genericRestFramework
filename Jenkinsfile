@@ -38,6 +38,8 @@ pipeline {
                description: 'Optional: run only these tests, e.g. BookingApiTest or BookingApiTest#createBooking')
         booleanParam(name: 'PARALLEL', defaultValue: false,
                description: 'Run test classes in parallel (JUnit 5 parallel execution)')
+        choice(name: 'RETRY_COUNT', choices: ['2', '1', '0', '3'],
+               description: 'Extra attempts for a failing test (2 = 1 run + 2 retries). Passing on retry = FLAKY, failing every attempt = FAILED')
     }
 
     options {
@@ -61,6 +63,7 @@ pipeline {
                     echo "Environment : ${params.ENVIRONMENT}"
                     echo "Tags        : ${env.EFFECTIVE_TAGS ?: '(all)'}"
                     echo "Excluded    : ${env.EFFECTIVE_EXCLUDES ?: '(none)'}"
+                    echo "Retries     : ${params.RETRY_COUNT ?: '2'} (test fails only if all ${((params.RETRY_COUNT ?: '2') as int) + 1} attempts fail)"
                 }
             }
         }
@@ -105,7 +108,8 @@ String buildMavenCommand() {
     def args = [
         'mvn', '-B', '-U', 'clean', 'test',
         "-Denv=${params.ENVIRONMENT}",
-        '-DtestFailureIgnore=true'          // let JUnit/Allure publish; build turns UNSTABLE on failures
+        '-DtestFailureIgnore=true',         // let JUnit/Allure publish; build turns UNSTABLE on failures
+        "-Dretry.count=${params.RETRY_COUNT ?: '2'}"
     ]
     if (env.EFFECTIVE_TAGS)     { args << "\"-Dgroups=${env.EFFECTIVE_TAGS}\"" }
     if (env.EFFECTIVE_EXCLUDES) { args << "\"-DexcludedGroups=${env.EFFECTIVE_EXCLUDES}\"" }

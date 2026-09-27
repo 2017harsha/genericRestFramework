@@ -40,6 +40,11 @@
         <excludedGroups></excludedGroups>
         <!-- Jenkins sets this to true so the Allure report is still published on failures -->
         <testFailureIgnore>false</testFailureIgnore>
+        <!-- Retry: a failing test is re-run up to this many extra times (1 run + 2 retries = 3 attempts).
+             Passes on a retry  -> reported as FLAKY (build stays green).
+             Fails all attempts -> reported as FAILED.
+             Override: -Dretry.count=0 (no retries), -Dretry.count=3, … -->
+        <retry.count>2</retry.count>
     </properties>
 
     <dependencyManagement>
@@ -163,10 +168,12 @@
                     <!-- Don't fail the build before the Allure report is generated;
                          Jenkins marks the build UNSTABLE from the JUnit XML instead. -->
                     <testFailureIgnore>${testFailureIgnore}</testFailureIgnore>
+                    <rerunFailingTestsCount>${retry.count}</rerunFailingTestsCount>
                     <groups>${groups}</groups>
                     <excludedGroups>${excludedGroups}</excludedGroups>
                     <systemPropertyVariables>
                         <env>${env}</env>
+                        <retry.count>${retry.count}</retry.count>
                         <allure.results.directory>${project.build.directory}/allure-results</allure.results.directory>
                     </systemPropertyVariables>
                 </configuration>

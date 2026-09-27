@@ -22,6 +22,7 @@ PROJECTS.each { p ->
             stringParam('EXCLUDE_TAGS', '', 'Tags to exclude')
             stringParam('TEST_CLASS', '', 'Optional test class / method filter')
             booleanParam('PARALLEL', false, 'Run in parallel')
+            choiceParam('RETRY_COUNT', ['2', '1', '0', '3'], 'Extra attempts for a failing test (2 = 1 run + 2 retries)')
         }
 
         properties {

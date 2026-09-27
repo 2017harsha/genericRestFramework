@@ -63,9 +63,27 @@ class BookingNegativeApiTest extends BookingTestBase {
         @ParameterizedTest(name = "GET /booking/{0} → 404")
         @Tag("regression")
         @Story("Get booking")
-        @ValueSource(strings = {"abc", "-1", "0", "1.5", "%20"})
+        @ValueSource(strings = {"abc", "-1", "0", "%20"})
         void getWithMalformedIdReturns404(String badId) {
             ResponseValidator.of(bookings.getById(badId)).statusCode(404);
+        }
+
+        @Test
+        @Tag("regression")
+        @DestructiveTest
+        @Story("Get booking")
+        @DisplayName("GET /booking/{id}.5 – decimal id is truncated to the whole number (API quirk, 404 expected)")
+        @Description("Restful-Booker parses only the leading integer of the id, so /booking/7.5 returns booking 7 "
+                + "with 200 instead of rejecting the malformed id. The test pins that behaviour.")
+        void decimalIdIsTruncatedToWholeNumber() {
+            Booking booking = aBooking().build();
+            int id = givenBooking(booking);
+
+            Booking returned = ResponseValidator.of(bookings.getById(id + ".5"))
+                    .statusCode(200)
+                    .as(Booking.class);
+
+            assertThat(returned).as("booking returned for id '" + id + ".5'").isEqualTo(booking);
         }
 
         @Test

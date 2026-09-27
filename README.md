@@ -3,6 +3,7 @@
 A reusable base for API test automation, built with **Java 21 · REST Assured 5 · JUnit 5 · Maven · Allure**. It includes:
 - a **parameterised Jenkins pipeline** (qa / dev / prod)
 - the **prod password read at runtime from AWS SSM Parameter Store**
+- **automatic retry** of failing tests (1 run + 2 retries): a test is FAILED only if every attempt fails, and each attempt is logged
 - a complete sample test suite against the public **[Restful-Booker](https://restful-booker.herokuapp.com)** API: about 60 positive and negative tests
 
 Copy this project for each new API project. Replace the sample `booking` package with your own service objects and tests. You don't need to change the framework core (`com.qa.framework`).
@@ -29,7 +30,7 @@ Copy this project for each new API project. Replace the sample `booking` package
 Prerequisites: **JDK 21+** and **Maven 3.8+** on the `PATH`. Check with `java -version` and `mvn -v`.
 
 ```bash
-cd RestAssured
+cd RestAPI
 mvn clean test          # runs every test against the qa environment
 mvn allure:serve        # builds the Allure report and opens it in your browser
 ```
@@ -51,13 +52,17 @@ The first run downloads the dependencies and the Allure command-line tool, which
 | AssertJ | 3.27.3 | readable assertions |
 | JSON Schema Validator | 5.5.1 | response contract checks |
 | AWS SDK v2 (SSM) | 2.30.0 | reads secrets from Parameter Store |
+| Maven Surefire | 3.5.2 | runs the tests; `rerunFailingTestsCount` = automatic retry |
+| Allure Maven plugin | 2.15.2 | `mvn allure:serve` / `allure:report` |
+| SLF4J (simple) | 2.0.16 | logging, including the `RetryLog` retry messages |
 
 All versions are properties at the top of `pom.xml`.
 
 ## 3. Project layout
 
 ```
-RestAssured
+RestAPI
+├── .gitignore                      ignores target/, .allure/, IDE files, local secrets
 ├── pom.xml                         dependencies, surefire + AspectJ (Allure), -Denv / -Dgroups switches
 ├── Jenkinsfile                     parameterised pipeline (ENVIRONMENT, TEST_TAGS, …)
 ├── jenkins/api-test-job-dsl.groovy optional: create one job per project automatically
@@ -73,7 +78,8 @@ RestAssured
     │   ├── client/     RequestSpecFactory (shared spec), BaseService (HTTP helpers)
     │   ├── assertions/ ResponseValidator (fluent, Allure-reported checks)
     │   ├── base/       BaseApiTest, @DestructiveTest (auto-skipped on prod)
-    │   ├── listeners/  Allure environment widget
+    │   ├── listeners/  AllureEnvironmentWriter (Allure environment widget),
+    │   │               RetryLoggingExtension (logs every retry attempt)
     │   └── utils/      JsonUtils, RandomData
     └── test
         ├── java/com/qa/tests                 ← YOUR tests (sample: Restful-Booker)
@@ -115,6 +121,45 @@ mvn clean test -Djunit.jupiter.execution.parallel.enabled=true   # parallel
 
 Always use `clean` after renaming or deleting test classes. Otherwise old compiled classes in `target` still run.
 
+### Automatic retry of failing tests (1 run + 2 retries)
+
+A failing test is re-run automatically before it is reported as failed. This uses Maven Surefire's `rerunFailingTestsCount`, configured by the `retry.count` property in `pom.xml` (default **2**):
+
+| Attempt 1 | Attempt 2 | Attempt 3 | Final result |
+|---|---|---|---|
+| ✅ pass | – | – | **PASSED** |
+| ❌ fail | ✅ pass | – | **FLAKY**, counted as passed, build stays green |
+| ❌ fail | ❌ fail | ✅ pass | **FLAKY**, counted as passed, build stays green |
+| ❌ fail | ❌ fail | ❌ fail | **FAILED**, only now does the test fail |
+
+- Only the failing test is re-run, not the whole class. For parameterised tests only the failing invocation is re-run.
+- `@AfterEach` runs after every attempt, so bookings created by a failed attempt are still cleaned up.
+- The console summary lists `Flakes:` separately from `Failures:`.
+- Every attempt is logged by `RetryLoggingExtension` (logger name `RetryLog`), so you can see in the console / Jenkins log how many times a test was retried before it failed or passed:
+
+```
+WARN  RetryLog - [RETRY] BookingApiTest > POST /booking creates a booking and echoes it back | attempt 1/3 FAILED | will retry (2 retries left) | cause: AssertionError: 1 expectation failed. Expected status code <200> but was <503>.
+INFO  RetryLog - [RETRY] BookingApiTest > POST /booking creates a booking and echoes it back | attempt 2/3 started (retry 1 of 2)
+WARN  RetryLog - [RETRY] BookingApiTest > POST /booking creates a booking and echoes it back | PASSED on attempt 2/3 after 1 failed attempt(s) -> FLAKY
+
+WARN  RetryLog - [RETRY] BookingNegativeApiTest > UnknownIds > ... | attempt 1/3 FAILED | will retry (2 retries left) | cause: ...
+INFO  RetryLog - [RETRY] BookingNegativeApiTest > UnknownIds > ... | attempt 2/3 started (retry 1 of 2)
+WARN  RetryLog - [RETRY] BookingNegativeApiTest > UnknownIds > ... | attempt 2/3 FAILED | will retry (1 retry left) | cause: ...
+INFO  RetryLog - [RETRY] BookingNegativeApiTest > UnknownIds > ... | attempt 3/3 started (retry 2 of 2)
+ERROR RetryLog - [RETRY] BookingNegativeApiTest > UnknownIds > ... | FAILED on all 3 attempts (retried 2 times) -> marked FAILED | cause: ...
+```
+
+  Search the log for `[RETRY]` to find them. Tests that pass first time log nothing extra. In Allure, each attempt also has an **"Attempt n of 3"** step.
+- In Allure, the last attempt is the test's result and earlier attempts are in the test's **Retries** tab. Tests that passed on a retry are marked **flaky**.
+- Change the number per run:
+
+```bash
+mvn clean test -Dretry.count=0     # no retries – see the real first-attempt result (use while debugging)
+mvn clean test -Dretry.count=3     # 1 run + 3 retries
+```
+
+A retry hides *intermittent* problems (network, shared test data, a slow free server). It never turns a real bug into a pass: a test that fails every time is still reported as **FAILED**. Look at flaky tests regularly. They often point to timing or test-data issues worth fixing.
+
 ### View the Allure report
 
 ```bash
@@ -130,6 +175,7 @@ What the report shows:
 - **Behaviors:** tests grouped as *Restful-Booker → Authentication / Bookings / Health check → story* (Create booking, Security, …).
 - **Test details:** every service call is an Allure step, e.g. "Create booking" or "Delete booking 123". Each step has the full **request and response** attached (URL, headers, body). Sensitive headers are masked in the console log.
 - **Skipped:** known-defect tests show as skipped, with their issue id.
+- **Retries:** a retried test has a **Retries** tab listing the earlier attempts, and an "Attempt n of 3" step. Tests that passed only on a retry are marked **flaky**.
 
 ### Override any setting from the command line
 
@@ -157,6 +203,7 @@ Lookup order (first match wins): **`-Dkey`** → **ENV_VAR** (dots → underscor
 | `sla.response.ms` | Response-time limit used by `respondedWithin(...)` checks |
 | `aws.region`, `aws.profile` | For Parameter Store lookups |
 | `tests.allow.destructive` | Defaults to `false` on prod, `true` elsewhere |
+| `retry.count` | Maven property (`pom.xml`, default `2`): extra attempts for a failing test. Override with `-Dretry.count=0` … `3` |
 
 **Current setup (Restful-Booker):** `common.properties` sets token auth. The framework POSTs `admin` and the password to `/auth` once, then sends `Cookie: token=<token>` on every request.
 
@@ -222,10 +269,11 @@ You can add other back-ends (Vault, Secrets Manager) by implementing `SecretProv
 | `EXCLUDE_TAGS` | comma-separated; `destructive` is **always** excluded on prod |
 | `TEST_CLASS` | optional `-Dtest` filter, e.g. `BookingApiTest` or `BookingApiTest#createBooking` |
 | `PARALLEL` | JUnit 5 parallel execution |
+| `RETRY_COUNT` | `2` (default) · `1` · `0` · `3`: extra attempts for a failing test. The test is marked FAILED only if every attempt fails; passing on a retry shows as flaky |
 
 **Or with Job DSL:** add your repos to `jenkins/api-test-job-dsl.groovy` and run it from a seed job. It creates one parameterised job per project, with parameters available from build #1 and an optional nightly qa regression trigger.
 
-**Results:** Failed tests turn the build **UNSTABLE** (not FAILED). JUnit trends and the **Allure Report** link appear on every build.
+**Results:** Failed tests (all 3 attempts failed) turn the build **UNSTABLE** (not FAILED). Flaky tests don't. JUnit trends and the **Allure Report** link appear on every build.
 
 **qa/dev credentials (optional):** add a *Username with password* credential. Put its ID in `QA_DEV_CREDENTIALS` in the `Jenkinsfile`. Then use `auth.username=env:API_USERNAME` / `auth.password=env:API_PASSWORD` in `qa.properties` or `dev.properties`.
 
@@ -253,7 +301,7 @@ You can add other back-ends (Vault, Secrets Manager) by implementing `SecretProv
 | `HealthCheckApiTest` | 1 | API is up, within the SLA | – |
 | `AuthApiTest` | 9 | valid login returns a token | 7 bad-credential cases (wrong / case-changed username and password, empty, trailing space, SQL injection) and missing fields: **no token issued** |
 | `BookingApiTest` | 20 | list and get (prod-safe smoke), create with schema check, create from JSON file, 8 data variations (deposit not paid, optional field omitted, 1 night, 30 nights, large price, apostrophes/hyphens, non-ASCII, long text), read-after-write, search (found / empty), PUT with token, PATCH changes only the given fields, PUT with Basic auth, delete then 404, full customer journey (book → view → extend → add request → cancel) | – |
-| `BookingNegativeApiTest` | 26 | – | unknown / malformed ids (404), PUT/DELETE unknown id (405), delete twice, PUT/PATCH/DELETE **without token** and **with an invalid token** (403, and data unchanged), each mandatory field missing, empty body, malformed JSON (400), unsupported `Accept` (418), 2 known defects |
+| `BookingNegativeApiTest` | 26 | – | unknown / malformed ids (404), decimal id like `7.5` treated as `7` (200 – quirk), PUT/DELETE unknown id (405), delete twice, PUT/PATCH/DELETE **without token** and **with an invalid token** (403, and data unchanged), each mandatory field missing, empty body, malformed JSON (400), unsupported `Accept` (418), 2 known defects |
 | `ConfigManagerTest` | 5 | framework self-tests (offline) | unknown environment fails fast |
 
 ### Tags
@@ -269,7 +317,7 @@ You can add other back-ends (Vault, Secrets Manager) by implementing `SecretProv
 
 ### How API quirks and bugs are handled
 
-- **Quirks** (non-standard but intended: 201 on delete, 200 for bad login, 500 instead of 400 for missing fields, 405 for an unknown id, 418 for an unsupported Accept): the test checks the **actual** behaviour and says so in its name and `@Description`, so a change in behaviour is noticed.
+- **Quirks** (non-standard but intended: 201 on delete, 200 for bad login, 500 instead of 400 for missing fields, 405 for an unknown id, 418 for an unsupported Accept, `/booking/7.5` returning booking 7): the test checks the **actual** behaviour and says so in its name and `@Description`, so a change in behaviour is noticed.
 - **Real defects** (check-out before check-in accepted, negative price accepted): written with the **correct** expectation, marked `@Disabled("Known defect RB-10x …")` and linked with `@Issue`. Remove `@Disabled` once the bug is fixed.
 
 ## 9. Adding tests for a new API
@@ -314,7 +362,19 @@ You can add other back-ends (Vault, Secrets Manager) by implementing `SecretProv
    ```
 6. **Other auth in one test:** `RequestSpecFactory.build(new BasicAuthStrategy("user2", () -> "..."))`, or an invalid token with `new HeaderTokenAuthStrategy("Cookie", "token=", () -> "bad")`.
 7. **A second API in the same project:** add `services.payments.base.url=...` and use `super("/payments", RequestSpecFactory.forService("payments"))`.
-8. Delete the sample `booking` package, its services, models, data builder, schemas and `testdata/booking.json`.
+8. **Available checks** (`ResponseValidator.of(response)…`), each shown as a step in Allure:
+
+   | Method | Checks |
+   |---|---|
+   | `statusCode(int)` | HTTP status |
+   | `contentType(String)` | `Content-Type` contains the value |
+   | `hasHeader(String)` | header is present |
+   | `matchesSchema(String)` | body matches a JSON schema on the classpath (`schemas/...`) |
+   | `respondedWithin(long ms)` | response time ≤ limit |
+   | `body(String path, Matcher)` | JSON path value, e.g. `body("totalprice", equalTo(750))` |
+   | `bodyContains(String)` / `bodyDoesNotContain(String)` | raw body text |
+   | `as(Class)` / `response()` | deserialize (records/POJOs) or get the raw `Response` for AssertJ checks |
+9. Delete the sample `booking` package, its services, models, data builder, schemas and `testdata/booking.json`.
 
 > **Reusing the core as a library (optional):** `mvn install` this project. In each API project, depend on `com.qa.automation:api-test-framework:1.0.0` and keep only `src/test`. The Jenkinsfile and config files work the same way.
 
@@ -325,7 +385,11 @@ You can add other back-ends (Vault, Secrets Manager) by implementing `SecretProv
 | Many tests fail with **418** | The API requires `Accept: application/json` exactly. REST Assured's `ContentType.JSON` sends four media types. The framework now sets the exact value in `RequestSpecFactory`. Keep it that way. |
 | `allure:serve` fails: *Could not find artifact allure-commandline:zip:2.29.1* | The report CLI has its own versions, separate from allure-java. Set `allure.commandline.version` in `pom.xml` to an existing release (currently 2.46.1). |
 | A test that was deleted/renamed still runs | Old classes in `target`. Run `mvn clean test`. |
-| One or two random failures / timeouts | Restful-Booker is a free shared service that resets its data and is sometimes slow. Re-run once. If it's often slow, raise `sla.response.ms` or `http.read.timeout.ms`. |
+| One or two random failures / timeouts | Restful-Booker is a free shared service that resets its data and is sometimes slow. Failing tests are already retried twice automatically (see *Automatic retry*). If a test still fails all 3 attempts, it's a real failure, or the service is down. If it's often slow, raise `sla.response.ms` or `http.read.timeout.ms`. |
+| Want to see a failure without retries while debugging | `mvn clean test -Dretry.count=0 -Dtest=ClassName#method` |
+| No `[RETRY]` lines in the log | The test class must extend `BaseApiTest`, which registers `RetryLoggingExtension`. Check `org.slf4j.simpleLogger.log.RetryLog` in `simplelogger.properties` isn't set above `warn`. |
+| Every attempt is logged as `attempt 1/3` | Surefire re-ran the test in a new JVM, so the attempt counter reset. Keep the default single fork (don't set `reuseForks=false`). |
+| `git` says *Another git process seems to be running* | A stale `.git/index.lock` was left behind (e.g. an interrupted command or a sync tool). Close other git tools and delete that file. |
 | `Could not transfer artifact` / `PKIX path building failed` | Corporate proxy or SSL inspection. Configure the proxy in `~/.m2/settings.xml` or import the company CA into the JDK truststore. |
 | Prod run fails with *AWS SSM parameter not found* / *AccessDenied* | Check the parameter name, `aws.region`, and IAM permissions (`ssm:GetParameter`, `kms:Decrypt`). See section 6. |
 | Project on OneDrive syncs thousands of files | `target/` and `.allure/` are build output (git-ignored). Pause sync while building, or keep the project outside OneDrive. |
