@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadApiTestSecrets",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:ap-south-1:<AWS_ACCOUNT_ID>:parameter/api-test-framework/prod/*"
+    },
+    {
+      "Sid": "DecryptSecureString",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:ap-south-1:<AWS_ACCOUNT_ID>:key/<KMS_KEY_ID_OR_USE_aws/ssm_KEY_ARN>",
+      "Condition": {
+        "StringEquals": { "kms:ViaService": "ssm.ap-south-1.amazonaws.com" }
+      }
+    }
+  ]
+}

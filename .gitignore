@@ -1,0 +1,15 @@
+target/
+allure-results/
+allure-report/
+.allure/
+*.log
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+.DS_Store
+# never commit local secrets
+*.local.properties
+.env
